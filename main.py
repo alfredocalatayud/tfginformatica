@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 import requests
 from progress.bar import Bar
@@ -67,28 +68,74 @@ descripciones_http = {
     511: "Autenticación de red requerida",
 }
 
+n_urls = 0
+n_urls_off = 0
+n_intentos = 0
+n_retries = 3  # Número máximo de reintentos
+retry_delay = 5  # Tiempo de espera entre reintentos en segundos
+
+urls_off = []
+l_http_status = []
+
 db_xlsx = "ayuntamientos_web_v2.xlsx"
-# workbook = op.load_workbook(db_xlsx)
-#
-# sheet = workbook.active
-#
-# column_name = "WebAyuntamiento"
-#
-# webs = []
-#
-# for row in sheet.iter_rows(values_only=True):
-#     row_list = list(row)  # Convierte la tupla en una lista
-#     if column_name in sheet[1]:  # Verifica si el nombre de la columna está en la primera fila
-#         web = row_list[sheet[1].index(column_name)]  # Utiliza index en la lista
-#         webs.append(web)
-#
-# for web in webs:
-#     print(web)
-#
-# workbook.close()
 
 try:
     df = pd.read_excel(db_xlsx)
+except FileNotFoundError:
+    print("El archivo {} no se encontró.".format(db_xlsx))
+    exit()
+except Exception as e:
+    print("Ocurrió un error al leer el archivo: {}".format(e))
+    exit()
+
+urls = df["WebAyuntamiento"]
+ayuntamientos = df["NombreAyuntamiento"]
+
+n_urls = len(urls)
+
+bar = Bar('Probando URLs:', max=n_urls)
+
+for url in urls:
+    bar.next()
+    for _ in range(n_retries):
+        try:
+            response = requests.get(url, timeout=10)  # Ajusta el tiempo de espera según sea necesario
+            http_status = response.status_code
+            l_http_status.append(http_status)
+
+            if http_status != 200:
+                n_urls_off += 1
+                description = descripciones_http.get(http_status, "Estado desconocido")
+                urls_off.append((url, http_status, description))
+            break  # Sale del bucle de reintento si la solicitud es exitosa
+        except requests.exceptions.RequestException as e:
+            n_intentos += 1
+            time.sleep(retry_delay)  # Espera antes de reintentar
+
+    n_urls += 1
+
+    #if n_urls >= 100:
+     #   break
+
+bar.finish()
+
+with open('informe.txt', 'w') as txtfile:
+    txtfile.write("Informe de Estados HTTP:\n\n")
+    txtfile.write("Número de URLs revisadas: {}\n".format(n_urls))
+    txtfile.write("Número de URLs con estado distinto de 200: {}\n".format(n_urls_off))
+    txtfile.write("Número de reintentos de acceso: {}\n\n".format(n_intentos))
+
+    if n_urls_off > 0:
+        txtfile.write("URLs con estado distinto de 200:\n")
+        for url, status, description in urls_off:
+            ayuntamiento = df.loc[df["WebAyuntamiento"] == url, "NombreAyuntamiento"].values[0]
+            txtfile.write("Ayuntamiento: {}\nURL: {}\nEstado HTTP: {} ({})\n\n".format(ayuntamiento, url, status, description))
+
+print("Informe generado exitosamente en 'informe.txt'")
+
+# Abre el archivo Excel
+try:
+    workbook = op.load_workbook(db_xlsx)
 except FileNotFoundError:
     print(f"El archivo {db_xlsx} no se encontró.")
     exit()
@@ -96,47 +143,24 @@ except Exception as e:
     print(f"Ocurrió un error al leer el archivo: {str(e)}")
     exit()
 
-l_http_status = []
+# Obtiene la hoja activa del archivo
+sheet = workbook.active
 
-urls = df["WebAyuntamiento"]
+# Especifica el nombre de la columna en el DataFrame
+column_name = "HTTPStatus"
 
-n_urls = len(urls)
-bar = Bar('Probando URLs:', max=n_urls)
+# Verifica si la columna ya existe, de lo contrario, créala
+if column_name not in sheet[1]:
+    sheet.insert_cols(idx=6, amount=1)  # Inserta la columna en la posición deseada
+    sheet.cell(row=1, column=6, value=column_name)  # Establece el encabezado de la columna
 
-n_urls = 0
-n_urls_off = 0
-urls_off = []
+# Escribe los valores de l_http_status en la columna especificada
+for idx, http_status in enumerate(l_http_status, start=2):
+    cell = sheet.cell(row=idx, column=6)
+    cell.value = http_status
 
-for url in urls:
-    bar.next()
-    try:
-        response = requests.get(url)
-        http_status = response.status_code
-        l_http_status.append(http_status)
+# Guarda el archivo Excel actualizado
+workbook.save(db_xlsx)
+workbook.close()
 
-        if http_status != 200:
-            n_urls_off += 1
-            description = descripciones_http.get(http_status, "Estado desconocido")
-            urls_off.append((url, http_status, description))
-    except Exception as e:
-        http_status = None
-        l_http_status.append(http_status)
-
-    # n_urls += 1
-    #
-    # if n_urls >= 100:
-    #     break
-
-bar.finish()
-
-with open('informe.txt', 'w') as txtfile:
-    txtfile.write("Informe de Estados HTTP:\n\n")
-    txtfile.write(f"Número de URLs revisadas: {n_urls}\n")
-    txtfile.write(f"Número de URLs con estado distinto de 200: {n_urls_off}\n\n")
-
-    if n_urls_off > 0:
-        txtfile.write("URLs con estado distinto de 200:\n")
-        for url, status, description in urls_off:
-            txtfile.write(f"URL: {url}\nEstado HTTP: {status} ({description})\n\n")
-
-print("Informe generado exitosamente en 'informe.txt'")
+print("Valores de estado agregados exitosamente en la columna '{}' de '{}'.".format(column_name, db_xlsx))
